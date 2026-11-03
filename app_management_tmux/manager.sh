@@ -1,0 +1,1289 @@
+#!/usr/bin/env bash
+#
+# manager.sh - Interactive app manager for Linux using tmux
+#
+# Launch and manage Streamlit, Django, Dash, Flask and Custom (own start command) apps from apps.json.
+# Each app runs in a named tmux window that can be stopped/restarted.
+#
+# USAGE
+#   ./manager.sh                    # Interactive menu
+#   ./manager.sh --app "AppName"    # Start specific app
+#   ./manager.sh --all              # Start all apps
+#   ./manager.sh --dry-run          # Show what would be run
+#   ./manager.sh --attach           # Attach to tmux session
+#
+# REQUIREMENTS
+#   - Bash 4.0+
+#   - tmux 2.0+
+#   - jq (JSON processor)
+#   - Python apps: Python 3.8+, uv or pip
+#
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source helper libraries
+source "$SCRIPT_DIR/lib/config.sh"
+source "$SCRIPT_DIR/lib/url_helpers.sh"
+source "$SCRIPT_DIR/lib/app_helpers.sh"
+source "$SCRIPT_DIR/lib/tmux_helpers.sh"
+source "$SCRIPT_DIR/lib/json_helpers.sh"
+
+# Command line arguments
+APP_NAME=""
+DRY_RUN=false
+AUTO_START=false
+START_ALL=false
+ATTACH_MODE=false
+SKIP_LANDING_PAGE=false
+
+usage() {
+    cat << EOF
+Usage: $(basename "$0") [OPTIONS]
+
+Launch and manage Python web apps (Streamlit, Django, Dash, Flask, or Custom with its own start command) using tmux.
+
+OPTIONS:
+    -a, --app NAME      Start a specific app by name
+    -A, --all           Start all apps
+    -d, --dry-run       Show what would be executed without running
+    -t, --attach        Attach to the tmux session
+    -L, --no-landing    Skip auto-starting the landing page dashboard
+    -h, --help          Show this help message
+
+EXAMPLES:
+    $(basename "$0")                    # Interactive menu
+    $(basename "$0") --app "My App"     # Start specific app
+    $(basename "$0") --all              # Start all apps
+    $(basename "$0") --dry-run --all    # Preview what would run
+    $(basename "$0") --attach           # Attach to tmux session
+    $(basename "$0") --no-landing       # Start without dashboard
+
+INTERACTIVE COMMANDS:
+    Dashboard:
+        D           Toggle landing page dashboard
+    Manage apps:
+        [number(s)] Start app(s) by index (e.g., 1,2,3) (0 for all)
+        [name]      Start app by name
+        s [num(s)]  Stop app(s) by index (e.g., 1,2,3) (0 for all)
+        r [num(s)]  Restart app(s) by index (e.g., 1,2,3) (0 for all)
+        u [num(s)]  Update app(s) from repo (e.g., 1,2,3) (0 for all)
+    Edit apps.json:
+        aa          Add a new app (incl. Custom: any start command + port)
+        ap          Add a new process (custom command)
+        e [num]     Edit by index
+        d [num(s)]  Delete app(s) by index (e.g., 1,2,3)
+    Tmux:
+        l           List tmux windows
+        t           Attach to tmux session
+        t [num]     Attach and switch to app window
+    Other:
+        R           Refresh list
+        q           Quit
+
+DASHBOARD:
+    The landing page dashboard runs automatically on port $LANDING_PAGE_PORT.
+    Use -L/--no-landing to skip auto-start, or set LANDING_PAGE_ENABLED=false in config.sh.
+
+EOF
+    exit 0
+}
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -a|--app)
+            APP_NAME="$2"
+            AUTO_START=true
+            shift 2
+            ;;
+        -A|--all)
+            START_ALL=true
+            AUTO_START=true
+            shift
+            ;;
+        -d|--dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        -t|--attach)
+            ATTACH_MODE=true
+            shift
+            ;;
+        -L|--no-landing)
+            SKIP_LANDING_PAGE=true
+            shift
+            ;;
+        -h|--help)
+            usage
+            ;;
+        *)
+            echo "Unknown option: $1"
+            usage
+            ;;
+    esac
+done
+
+# Check dependencies
+check_dependencies() {
+    local missing=()
+    
+    if ! command -v jq &>/dev/null; then
+        missing+=("jq")
+    fi
+    
+    if ! command -v tmux &>/dev/null; then
+        missing+=("tmux")
+    fi
+    
+    if ! command -v python3 &>/dev/null && ! command -v python &>/dev/null; then
+        missing+=("python3")
+    fi
+    
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        echo -e "${RED}Error: Missing required dependencies: ${missing[*]}${NC}"
+        echo ""
+        echo "Install with:"
+        echo "  Ubuntu/Debian: sudo apt install ${missing[*]}"
+        echo "  Fedora/RHEL:   sudo dnf install ${missing[*]}"
+        echo "  Arch:          sudo pacman -S ${missing[*]}"
+        echo "  macOS:         brew install ${missing[*]}"
+        exit 1
+    fi
+}
+
+# Load apps from JSON
+load_apps_json() {
+    local json_path
+    json_path=$(get_apps_json_path "$SCRIPT_DIR" 2>/dev/null) || {
+        # apps.json not found - try to create from example
+        local example_path="$SCRIPT_DIR/apps_example.json"
+        local target_path="$SCRIPT_DIR/apps.json"
+        
+        if [[ -f "$example_path" ]]; then
+            echo -e "${YELLOW}apps.json not found. Creating from apps_example.json...${NC}"
+            cp "$example_path" "$target_path"
+            echo -e "${GREEN}Created: $target_path${NC}"
+            echo -e "${CYAN}Please edit apps.json with your actual app configurations.${NC}"
+            echo ""
+            json_path="$target_path"
+        else
+            echo -e "${RED}Error: Could not find apps.json or apps_example.json${NC}"
+            echo "Please create apps.json in: $SCRIPT_DIR"
+            exit 1
+        fi
+    }
+    
+    echo -e "${CYAN}Loading apps from: $json_path${NC}"
+    
+    APPS_JSON=$(cat "$json_path")
+    APPS_JSON=$(echo "$APPS_JSON" | filter_supported_apps | unique_apps_by_name)
+    APP_COUNT=$(echo "$APPS_JSON" | jq 'length')
+    
+    if [[ "$APP_COUNT" -eq 0 ]]; then
+        echo -e "${YELLOW}No supported apps found in apps.json${NC}"
+    fi
+    
+    echo -e "${GREEN}Found $APP_COUNT supported apps${NC}"
+}
+
+# Start the landing page dashboard as a tmux window
+start_landing_page() {
+    if $SKIP_LANDING_PAGE || [[ "$LANDING_PAGE_ENABLED" != "true" ]]; then
+        return 0
+    fi
+    
+    local window_name="$LANDING_PAGE_WINDOW_NAME"
+    local sanitized_name=$(sanitize_window_name "$window_name")
+    
+    # Check if already running
+    if tmux_window_exists "$window_name"; then
+        if ! is_port_in_use "$LANDING_PAGE_PORT"; then
+            echo -e "${YELLOW}Removing stale dashboard window...${NC}"
+            tmux_kill_window "$window_name" 2>/dev/null || true
+        else
+            echo -e "${CYAN}Dashboard already running${NC}"
+            return 0
+        fi
+    fi
+
+    # Also check if port is in use
+    if is_port_in_use "$LANDING_PAGE_PORT"; then
+        echo -e "${CYAN}Dashboard port $LANDING_PAGE_PORT already in use${NC}"
+        return 0
+    fi
+
+    if $DRY_RUN; then
+        echo -e "${YELLOW}[DRY RUN] Would start landing page dashboard on port $LANDING_PAGE_PORT${NC}"
+        return 0
+    fi
+
+    echo -e "${GREEN}Starting landing page dashboard on port $LANDING_PAGE_PORT...${NC}"
+
+    ensure_tmux_session
+
+    # Start landing_page.sh in its own tmux window
+    local landing_script="$SCRIPT_DIR/landing_page.sh"
+
+    if [[ ! -x "$landing_script" ]]; then
+        echo -e "${YELLOW}Warning: landing_page.sh not found or not executable${NC}"
+        return 1
+    fi
+
+    tmux new-window -t "$TMUX_SESSION_NAME" -n "$sanitized_name" -c "$SCRIPT_DIR" \
+        bash -c "echo '=== Starting: Dashboard ==='; '$landing_script' '$LANDING_PAGE_PORT'; ret=\$?; echo ''; echo '=== Dashboard exited with code '\$ret' ==='; echo 'Press Enter to close this window...'; read"
+
+    # Remove placeholder window if it exists
+    tmux kill-window -t "$TMUX_SESSION_NAME:_placeholder" 2>/dev/null || true
+
+    local attempts=20
+    while (( attempts > 0 )); do
+        if is_port_in_use "$LANDING_PAGE_PORT"; then
+            echo -e "${GREEN}Dashboard running at http://localhost:$LANDING_PAGE_PORT${NC}"
+            return 0
+        fi
+
+        sleep 0.25
+        ((attempts--))
+    done
+
+    echo -e "${YELLOW}Dashboard window started, but port $LANDING_PAGE_PORT is not listening. Check the dashboard tmux window for errors.${NC}"
+    return 1
+}
+
+# Stop the landing page dashboard
+stop_landing_page() {
+    local window_name="$LANDING_PAGE_WINDOW_NAME"
+    local stopped=false
+    
+    if $DRY_RUN; then
+        echo -e "${YELLOW}[DRY RUN] Would stop landing page dashboard${NC}"
+        return 0
+    fi
+    
+    # Stop tmux window if it exists (this gracefully stops the process)
+    if tmux_window_exists "$window_name"; then
+        echo -e "${CYAN}Stopping landing page dashboard...${NC}"
+        tmux_stop_app "$window_name"
+        stopped=true
+        # Give it a moment to release the port
+        sleep 2
+    fi
+    
+    # Only kill port if tmux window didn't exist but port is still in use
+    # This handles orphaned processes, but avoids killing if tmux handled it
+    if ! $stopped && is_port_in_use "$LANDING_PAGE_PORT"; then
+        echo -e "${CYAN}Killing orphaned process on port $LANDING_PAGE_PORT...${NC}"
+        # Use a gentler approach - only SIGTERM, no SIGKILL
+        local pids=$(get_pids_on_port "$LANDING_PAGE_PORT")
+        if [[ -n "$pids" ]]; then
+            echo "$pids" | xargs -r kill 2>/dev/null || true
+        fi
+        stopped=true
+    fi
+    
+    if $stopped; then
+        echo -e "${GREEN}Dashboard stopped${NC}"
+    fi
+}
+
+# Check if landing page is running
+is_landing_page_running() {
+    tmux_window_exists "$LANDING_PAGE_WINDOW_NAME" || is_port_in_use "$LANDING_PAGE_PORT"
+}
+
+# Check if an app is running (by port or tmux window)
+is_app_running() {
+    local app_json="$1"
+    local name=$(echo "$app_json" | jq -r '.Name')
+    local port=$(echo "$app_json" | jq -r '.Port // empty')
+    
+    # Check tmux window first
+    if tmux_window_exists "$name"; then
+        return 0
+    fi
+    
+    # Check port
+    if [[ -n "$port" && "$port" != "null" ]] && is_port_in_use "$port"; then
+        return 0
+    fi
+    
+    return 1
+}
+
+# Display apps table
+display_apps() {
+    print_header "Available Apps"
+    print_table_header
+    
+    local index=1
+    echo "$APPS_JSON" | jq -c '.[]' | while IFS= read -r app; do
+        local name=$(echo "$app" | jq -r '.Name // "Unknown"')
+        local app_type=$(echo "$app" | jq -r 'if (.Type == null or .Type == "") and (.CustomCommand != null and .CustomCommand != "") then "Process" else (.Type // "Unknown") end')
+        local port=$(echo "$app" | jq -r '.Port // "N/A"')
+        
+        local status="stopped"
+        
+        # Check if running by tmux window or port
+        if tmux_window_exists "$name"; then
+            status="running"
+        elif [[ "$port" != "N/A" && "$port" != "null" ]] && is_port_in_use "$port"; then
+            status="running"
+        fi
+        
+        print_app_info "$index" "$name" "$app_type" "$port" "$status"
+        ((index++))
+    done
+    
+    print_table_footer
+}
+
+# Start a single app
+start_app() {
+    local app_json="$1"
+    
+    local name=$(echo "$app_json" | jq -r '.Name')
+    local app_path=$(echo "$app_json" | jq -r '.AppPath')
+    local app_type=$(echo "$app_json" | jq -r '.Type')
+    local port=$(echo "$app_json" | jq -r '.Port // empty')
+    local index_path=$(echo "$app_json" | jq -r '.IndexPath // empty')
+    
+    # Validate app
+    if [[ -z "$name" ]]; then
+        echo -e "${RED}Error: App missing Name${NC}"
+        return 1
+    fi
+    
+    if [[ -z "$app_path" || ! -d "$app_path" ]]; then
+        echo -e "${RED}Error: AppPath not found: $app_path${NC}"
+        return 1
+    fi
+    
+    # Check if index file exists for web apps
+    local is_web_type=false
+    [[ "$app_type" == "Streamlit" || "$app_type" == "Flask" || "$app_type" == "Dash" ]] && is_web_type=true
+    
+    if $is_web_type && [[ -n "$index_path" ]]; then
+        local full_index_path
+        if [[ "$index_path" == /* ]]; then
+            full_index_path="$index_path"
+        else
+            full_index_path="$app_path/$index_path"
+        fi
+        
+        if [[ ! -f "$full_index_path" ]]; then
+            echo -e "${RED}Error: IndexPath not found: $full_index_path${NC}"
+            return 1
+        fi
+    fi
+    
+    # Resolve working directory
+    local working_dir=$(realpath "$app_path")
+    
+    # Build run command
+    local run_cmd
+    run_cmd=$(build_app_run_command "$app_json" "$working_dir") || {
+        echo -e "${RED}Error: Could not build run command for $name${NC}"
+        return 1
+    }
+    
+    if $DRY_RUN; then
+        echo -e "${YELLOW}[DRY RUN] Would start '$name' in '$working_dir'${NC}"
+        echo -e "${CYAN}  Command: $run_cmd${NC}"
+        return 0
+    fi
+    
+    # Check if already running
+    if tmux_window_exists "$name"; then
+        echo -e "${YELLOW}Warning: '$name' already has a tmux window${NC}"
+        if ! confirm_action "Kill existing window and restart?"; then
+            echo "Skipping $name"
+            return 0
+        fi
+        tmux_kill_window "$name"
+        sleep 1
+    elif [[ -n "$port" && "$port" != "null" ]] && is_port_in_use "$port"; then
+        echo -e "${YELLOW}Warning: Port $port already in use${NC}"
+        if ! confirm_action "Kill process on port $port and start?"; then
+            echo "Skipping $name"
+            return 0
+        fi
+        kill_port "$port"
+        wait_for_port_free "$port" 5
+    fi
+    
+    echo -e "${GREEN}Starting '$name' in tmux...${NC}"
+    
+    # Launch in tmux window
+    tmux_new_window "$name" "$working_dir" "$run_cmd"
+    echo -e "${GREEN}Launched '$name' in tmux window${NC}"
+}
+
+# Stop a single app
+stop_app() {
+    local app_json="$1"
+    local name=$(echo "$app_json" | jq -r '.Name')
+    local port=$(echo "$app_json" | jq -r '.Port // empty')
+    
+    if $DRY_RUN; then
+        echo -e "${YELLOW}[DRY RUN] Would stop '$name'${NC}"
+        return 0
+    fi
+    
+    local stopped=false
+    
+    # Stop tmux window first (sends Ctrl+C and kills window)
+    if tmux_window_exists "$name"; then
+        echo -e "${CYAN}Stopping '$name' tmux window...${NC}"
+        tmux_stop_app "$name"
+        stopped=true
+    fi
+    
+    # Also kill any process on the port
+    if [[ -n "$port" && "$port" != "null" ]] && is_port_in_use "$port"; then
+        echo -e "${CYAN}Killing process on port $port...${NC}"
+        kill_port "$port"
+        stopped=true
+    fi
+    
+    if $stopped; then
+        echo -e "${GREEN}Stopped '$name'${NC}"
+    else
+        echo -e "${YELLOW}'$name' was not running${NC}"
+    fi
+}
+
+# Restart a single app
+restart_app() {
+    local app_json="$1"
+    local name=$(echo "$app_json" | jq -r '.Name')
+    local app_path=$(echo "$app_json" | jq -r '.AppPath')
+    
+    if $DRY_RUN; then
+        echo -e "${YELLOW}[DRY RUN] Would restart '$name'${NC}"
+        return 0
+    fi
+    
+    echo -e "${CYAN}Restarting '$name'...${NC}"
+    
+    # Stop it first
+    stop_app "$app_json"
+    
+    # Wait for port to be free
+    local port=$(echo "$app_json" | jq -r '.Port // empty')
+    if [[ -n "$port" && "$port" != "null" ]]; then
+        wait_for_port_free "$port" 5
+    fi
+    
+    # Start it again
+    start_app "$app_json"
+}
+
+# Update a single app (git pull + sync venv + restart)
+update_app() {
+    local app_json="$1"
+    local name=$(echo "$app_json" | jq -r '.Name')
+    local app_path=$(echo "$app_json" | jq -r '.AppPath')
+    local package_manager=$(echo "$app_json" | jq -r '.PackageManager // empty')
+    
+    if $DRY_RUN; then
+        echo -e "${YELLOW}[DRY RUN] Would update '$name'${NC}"
+        return 0
+    fi
+    
+    echo -e "${CYAN}===== Updating '$name' =====${NC}"
+    
+    # Stop the app first
+    stop_app "$app_json"
+    
+    # Wait for port to be free
+    local port=$(echo "$app_json" | jq -r '.Port // empty')
+    if [[ -n "$port" && "$port" != "null" ]]; then
+        wait_for_port_free "$port" 5
+    fi
+    
+    # Git pull
+    if [[ -d "$app_path/.git" ]]; then
+        echo -e "${CYAN}Pulling latest changes from git...${NC}"
+        pushd "$app_path" > /dev/null
+        if git pull; then
+            echo -e "${GREEN}Git pull successful${NC}"
+        else
+            echo -e "${YELLOW}Git pull failed or no changes${NC}"
+        fi
+        popd > /dev/null
+    else
+        echo -e "${YELLOW}No git repository found in '$app_path'${NC}"
+    fi
+    
+    # Update virtual environment
+    if [[ -z "$package_manager" || "$package_manager" == "null" ]]; then
+        package_manager=$(detect_package_manager "$app_path")
+    fi
+    
+    echo -e "${CYAN}Updating dependencies with $package_manager...${NC}"
+    pushd "$app_path" > /dev/null
+    
+    if [[ "$package_manager" == "uv" ]]; then
+        if uv sync; then
+            echo -e "${GREEN}Dependencies updated with uv sync${NC}"
+        else
+            echo -e "${YELLOW}Failed to update dependencies${NC}"
+        fi
+    else
+        # pip - look for requirements.txt
+        local requirements_file=""
+        if [[ -f "requirements.txt" ]]; then
+            requirements_file="requirements.txt"
+        elif [[ -f "requirements/base.txt" ]]; then
+            requirements_file="requirements/base.txt"
+        fi
+        
+        if [[ -n "$requirements_file" ]]; then
+            local venv_path=$(echo "$app_json" | jq -r '.VenvPath // empty')
+            local pip_cmd="pip"
+            
+            if [[ -n "$venv_path" && "$venv_path" != "null" && -f "$venv_path/bin/pip" ]]; then
+                pip_cmd="$venv_path/bin/pip"
+            elif [[ -f ".venv/bin/pip" ]]; then
+                pip_cmd=".venv/bin/pip"
+            elif [[ -f "venv/bin/pip" ]]; then
+                pip_cmd="venv/bin/pip"
+            fi
+            
+            if $pip_cmd install -r "$requirements_file"; then
+                echo -e "${GREEN}Dependencies updated with pip${NC}"
+            else
+                echo -e "${YELLOW}Failed to update dependencies${NC}"
+            fi
+        else
+            echo -e "${YELLOW}No requirements file found${NC}"
+        fi
+    fi
+    popd > /dev/null
+    
+    # Restart the app
+    echo -e "${CYAN}Starting '$name'...${NC}"
+    start_app "$app_json"
+    
+    echo -e "${GREEN}Update complete for '$name'${NC}"
+}
+
+# Start apps by selection
+start_selected_apps() {
+    local selection="$1"
+    
+    # Handle "0" for all apps
+    if [[ "$selection" == "0" ]]; then
+        echo "$APPS_JSON" | jq -c '.[]' | while IFS= read -r app; do
+            start_app "$app"
+            sleep 0.5  # Small delay between launches
+        done
+        return
+    fi
+    
+    # Parse comma-separated values
+    IFS=',' read -ra items <<< "$selection"
+    
+    for item in "${items[@]}"; do
+        item=$(echo "$item" | xargs)  # Trim whitespace
+        [[ -z "$item" ]] && continue
+        
+        if [[ "$item" == "0" ]]; then
+            echo "$APPS_JSON" | jq -c '.[]' | while IFS= read -r app; do
+                start_app "$app"
+                sleep 0.5
+            done
+            return
+        fi
+        
+        local app_json=""
+        
+        if [[ "$item" =~ ^[0-9]+$ ]]; then
+            # Numeric index (1-based)
+            local index=$((item - 1))
+            app_json=$(echo "$APPS_JSON" | jq ".[$index] // empty")
+        else
+            # Name match (case-insensitive)
+            app_json=$(echo "$APPS_JSON" | jq --arg name "$item" \
+                '[.[] | select(.Name | ascii_downcase == ($name | ascii_downcase))][0] // empty')
+        fi
+        
+        if [[ -n "$app_json" && "$app_json" != "null" ]]; then
+            start_app "$app_json"
+            sleep 0.5
+        else
+            echo -e "${YELLOW}Warning: Could not find app: $item${NC}"
+        fi
+    done
+}
+
+# Stop all running apps
+stop_all_apps() {
+    if $DRY_RUN; then
+        echo -e "${YELLOW}[DRY RUN] Would stop all apps${NC}"
+        return 0
+    fi
+    
+    echo -e "${CYAN}Stopping all apps...${NC}"
+    
+    # Stop each app
+    echo "$APPS_JSON" | jq -c '.[]' | while IFS= read -r app; do
+        local name=$(echo "$app" | jq -r '.Name')
+        if tmux_window_exists "$name" || is_app_running "$app"; then
+            stop_app "$app"
+        fi
+    done
+    
+    echo -e "${GREEN}All apps stopped${NC}"
+}
+
+# Add a new app interactively
+add_new_app() {
+    local json_file="$SCRIPT_DIR/apps.json"
+    
+    print_header "Add New App"
+    
+    # Get app path
+    read -r -p "Enter app path (absolute path): " app_path
+    if [[ -z "$app_path" || "$app_path" == "back" ]]; then
+        echo "Cancelled."
+        return
+    fi
+    
+    # Expand ~ if used
+    app_path="${app_path/#\~/$HOME}"
+    
+    if [[ ! -d "$app_path" ]]; then
+        echo -e "${RED}Error: Directory does not exist: $app_path${NC}"
+        return 1
+    fi
+    
+    app_path=$(realpath "$app_path")
+    
+    # Get app name (default to directory name)
+    local default_name=$(basename "$app_path")
+    read -r -p "Enter app name [$default_name]: " app_name
+    app_name="${app_name:-$default_name}"
+    
+    # Check for duplicate
+    if app_name_exists "$json_file" "$app_name"; then
+        echo -e "${RED}Error: An app named '$app_name' already exists${NC}"
+        return 1
+    fi
+    
+    # Detect app type
+    local detected_type=$(detect_app_type "$app_path")
+    echo -e "${CYAN}Detected type: $detected_type${NC}"
+    
+    local app_type
+    if [[ "$detected_type" == "Unknown" ]]; then
+        app_type=$(select_app_type "Streamlit")
+    else
+        read -r -p "Use detected type '$detected_type'? [Y/n]: " use_detected
+        if [[ -z "$use_detected" || "${use_detected,,}" =~ ^(y|yes)$ ]]; then
+            app_type="$detected_type"
+        else
+            app_type=$(select_app_type "$detected_type")
+        fi
+    fi
+    echo -e "${CYAN}App type: $app_type${NC}"
+    
+    # Get package manager
+    local pkg_manager=$(detect_package_manager "$app_path")
+    echo -e "${CYAN}Detected package manager: $pkg_manager${NC}"
+    
+    # Find venv
+    local venv_path=$(find_venv "$app_path" 2>/dev/null || echo "")
+    if [[ -n "$venv_path" ]]; then
+        echo -e "${CYAN}Found venv: $venv_path${NC}"
+    fi
+    
+    # Get index path for web apps
+    local index_path=""
+    if [[ "$app_type" == "Streamlit" || "$app_type" == "Flask" || "$app_type" == "Dash" ]]; then
+        echo -e "${CYAN}Select the main/index Python file:${NC}"
+        index_path=$(select_index_file "$app_path")
+        if [[ -z "$index_path" ]]; then
+            read -r -p "Enter index file path (relative to app): " index_path
+        fi
+    fi
+    
+    # Get port
+    local port=$(get_port_number)
+    
+    # Custom apps: the start command
+    local custom_command=""
+    if [[ "$app_type" == "Custom" ]]; then
+        custom_command=$(prompt_custom_command "$port")
+        if [[ -z "$custom_command" ]]; then
+            echo -e "${RED}Error: A Custom app needs a start command${NC}"
+            return 1
+        fi
+    fi
+    
+    # Build and save the app
+    local new_app=$(build_app_json "$app_name" "$app_type" "$port" "$app_path" "$index_path" "$venv_path" "$pkg_manager" "" "$custom_command")
+    
+    echo ""
+    echo -e "${CYAN}New app configuration:${NC}"
+    echo "$new_app" | jq .
+    echo ""
+    
+    read -r -p "Save this app? [Y/n]: " confirm
+    if [[ -z "$confirm" || "${confirm,,}" =~ ^(y|yes)$ ]]; then
+        add_app_to_json "$json_file" "$new_app"
+        echo -e "${GREEN}App '$app_name' added successfully!${NC}"
+    else
+        echo "Cancelled."
+    fi
+}
+
+# Add a new process (custom command) interactively
+add_new_process() {
+    local json_file="$SCRIPT_DIR/apps.json"
+    
+    print_header "Add New Process (Custom Command)"
+    
+    echo "Examples:"
+    echo "  - Django mgmt cmd: continuous_cache_update"
+    echo "  - Python module: python -m app.db.backup.local_cache_scheduler"
+    echo "  - Any script: python scripts/my_task.py"
+    echo "  - With settings: TZ=Europe/London python -m app.scheduler"
+    echo "  (A web app with a port: use 'aa' and pick Custom)"
+    echo ""
+    
+    # Get working directory path
+    read -r -p "Enter working directory path (absolute path): " app_path
+    if [[ -z "$app_path" || "$app_path" == "back" ]]; then
+        echo "Cancelled."
+        return
+    fi
+    
+    # Expand ~ if used
+    app_path="${app_path/#\~/$HOME}"
+    
+    if [[ ! -d "$app_path" ]]; then
+        echo -e "${RED}Error: Directory does not exist: $app_path${NC}"
+        return 1
+    fi
+    
+    app_path=$(realpath "$app_path")
+    
+    # Get process name
+    local default_name=$(basename "$app_path")
+    read -r -p "Enter process name [$default_name]: " app_name
+    app_name="${app_name:-$default_name}"
+    
+    # Check for duplicate
+    if app_name_exists "$json_file" "$app_name"; then
+        echo -e "${RED}Error: A process/app named '$app_name' already exists${NC}"
+        return 1
+    fi
+    
+    # Get custom command
+    read -r -p "Enter command to run: " custom_command
+    if [[ -z "$custom_command" ]]; then
+        echo -e "${RED}Error: Command is required${NC}"
+        return 1
+    fi
+    
+    # Get package manager
+    local pkg_manager=$(detect_package_manager "$app_path")
+    echo -e "${CYAN}Detected package manager: $pkg_manager${NC}"
+    
+    # Find venv (optional for custom commands)
+    local venv_path=$(find_venv "$app_path" 2>/dev/null || echo "")
+    if [[ -n "$venv_path" ]]; then
+        echo -e "${CYAN}Found venv: $venv_path${NC}"
+    fi
+    
+    # Build process JSON
+    local new_app=$(build_process_json "$app_name" "$app_path" "$custom_command" "$venv_path" "$pkg_manager")
+    
+    echo ""
+    echo -e "${CYAN}New process configuration:${NC}"
+    echo "$new_app" | jq .
+    echo ""
+    
+    read -r -p "Save this process? [Y/n]: " confirm
+    if [[ -z "$confirm" || "${confirm,,}" =~ ^(y|yes)$ ]]; then
+        add_app_to_json "$json_file" "$new_app"
+        echo -e "${GREEN}Process '$app_name' added successfully!${NC}"
+    else
+        echo "Cancelled."
+    fi
+}
+
+# Edit an existing app or process
+edit_app() {
+    local target="$1"
+    local json_file="$SCRIPT_DIR/apps.json"
+    
+    if [[ ! "$target" =~ ^[0-9]+$ ]]; then
+        echo -e "${YELLOW}Usage: e <number>${NC}"
+        return
+    fi
+    
+    local index=$((target - 1))
+    local app_json=$(echo "$APPS_JSON" | jq ".[$index] // empty")
+    
+    if [[ -z "$app_json" || "$app_json" == "null" ]]; then
+        echo -e "${RED}Invalid index: $target${NC}"
+        return
+    fi
+    
+    local app_name=$(echo "$app_json" | jq -r '.Name')
+    local app_type=$(echo "$app_json" | jq -r '.Type // empty')
+    local custom_command=$(echo "$app_json" | jq -r '.CustomCommand // empty')
+    
+    # A process has a CustomCommand and no Type; Custom (and Django) apps keep their CustomCommand as an app field
+    if [[ -z "$app_type" && -n "$custom_command" ]]; then
+        # Edit as process
+        print_header "Edit Process: $app_name"
+        
+        echo "Current configuration:"
+        echo "$app_json" | jq .
+        echo ""
+        
+        # Edit process fields
+        local current_name=$(echo "$app_json" | jq -r '.Name')
+        read -r -p "Name [$current_name]: " new_name
+        new_name="${new_name:-$current_name}"
+        
+        local current_app_path=$(echo "$app_json" | jq -r '.AppPath')
+        read -r -p "AppPath [$current_app_path]: " new_app_path
+        new_app_path="${new_app_path:-$current_app_path}"
+        
+        local current_cmd=$(echo "$app_json" | jq -r '.CustomCommand')
+        read -r -p "CustomCommand [$current_cmd]: " new_cmd
+        new_cmd="${new_cmd:-$current_cmd}"
+        
+        local current_venv=$(echo "$app_json" | jq -r '.VenvPath // ""')
+        read -r -p "VenvPath [$current_venv]: " new_venv
+        new_venv="${new_venv:-$current_venv}"
+        
+        local current_pm=$(echo "$app_json" | jq -r '.PackageManager // ""')
+        read -r -p "PackageManager [$current_pm]: " new_pm
+        new_pm="${new_pm:-$current_pm}"
+        
+        # Build updated process (fields this editor does not ask about, e.g. Port, are kept)
+        local updated_app=$(build_process_json "$new_name" "$new_app_path" "$new_cmd" "$new_venv" "$new_pm")
+        updated_app=$(merge_unmanaged_fields "$app_json" "$updated_app" Name AppPath CustomCommand VenvPath PackageManager)
+        
+        echo ""
+        echo -e "${CYAN}Updated configuration:${NC}"
+        echo "$updated_app" | jq .
+        echo ""
+        
+        read -r -p "Save changes? [Y/n]: " confirm
+        if [[ -z "$confirm" || "${confirm,,}" =~ ^(y|yes)$ ]]; then
+            update_app_in_json "$json_file" "$current_name" "$updated_app"
+            echo -e "${GREEN}Process '$new_name' updated successfully!${NC}"
+        else
+            echo "Cancelled."
+        fi
+    else
+        # Edit as app
+        print_header "Edit App: $app_name"
+        
+        echo "Current configuration:"
+        echo "$app_json" | jq .
+        echo ""
+        
+        # Edit app fields
+        local current_name=$(echo "$app_json" | jq -r '.Name')
+        read -r -p "Name [$current_name]: " new_name
+        new_name="${new_name:-$current_name}"
+        
+        local current_type=$(echo "$app_json" | jq -r '.Type')
+        read -r -p "Type (Streamlit/Django/Flask/Dash/Custom) [$current_type]: " new_type
+        new_type="${new_type:-$current_type}"
+        
+        local current_port=$(echo "$app_json" | jq -r '.Port')
+        read -r -p "Port [$current_port]: " new_port
+        new_port="${new_port:-$current_port}"
+        
+        local current_app_path=$(echo "$app_json" | jq -r '.AppPath')
+        read -r -p "AppPath [$current_app_path]: " new_app_path
+        new_app_path="${new_app_path:-$current_app_path}"
+        
+        local current_index=$(echo "$app_json" | jq -r '.IndexPath // ""')
+        local new_index=""
+        if [[ "$new_type" == "Streamlit" || "$new_type" == "Flask" || "$new_type" == "Dash" ]]; then
+            read -r -p "IndexPath [$current_index]: " new_index
+            new_index="${new_index:-$current_index}"
+        fi
+        
+        # Custom apps: start command. Django keeps an existing CustomCommand (management command) unchanged.
+        local new_cmd=""
+        if [[ "$new_type" == "Custom" ]]; then
+            new_cmd=$(prompt_custom_command "$new_port" "$custom_command")
+            if [[ -z "$new_cmd" ]]; then
+                echo -e "${RED}Error: A Custom app needs a start command${NC}"
+                return 1
+            fi
+        elif [[ "$new_type" == "Django" ]]; then
+            new_cmd="$custom_command"
+        fi
+        
+        local current_venv=$(echo "$app_json" | jq -r '.VenvPath // ""')
+        read -r -p "VenvPath [$current_venv]: " new_venv
+        new_venv="${new_venv:-$current_venv}"
+        
+        local current_pm=$(echo "$app_json" | jq -r '.PackageManager // ""')
+        read -r -p "PackageManager [$current_pm]: " new_pm
+        new_pm="${new_pm:-$current_pm}"
+        
+        local current_nginx=$(echo "$app_json" | jq -r '.NginxPath // ""')
+        read -r -p "NginxPath (leave empty if none) [$current_nginx]: " new_nginx
+        new_nginx="${new_nginx:-$current_nginx}"
+        
+        # Build updated app (fields this editor does not ask about, e.g. BasePath, are kept)
+        local updated_app=$(build_app_json "$new_name" "$new_type" "$new_port" "$new_app_path" "$new_index" "$new_venv" "$new_pm" "$new_nginx" "$new_cmd")
+        updated_app=$(merge_unmanaged_fields "$app_json" "$updated_app" Name Type Port AppPath IndexPath VenvPath PackageManager NginxPath CustomCommand)
+        
+        echo ""
+        echo -e "${CYAN}Updated configuration:${NC}"
+        echo "$updated_app" | jq .
+        echo ""
+        
+        read -r -p "Save changes? [Y/n]: " confirm
+        if [[ -z "$confirm" || "${confirm,,}" =~ ^(y|yes)$ ]]; then
+            update_app_in_json "$json_file" "$current_name" "$updated_app"
+            echo -e "${GREEN}App '$new_name' updated successfully!${NC}"
+        else
+            echo "Cancelled."
+        fi
+    fi
+}
+
+# Delete an app
+delete_app() {
+    local target="$1"
+    local json_file="$SCRIPT_DIR/apps.json"
+    
+    if [[ ! "$target" =~ ^[0-9]+$ ]]; then
+        echo -e "${YELLOW}Usage: d <number>${NC}"
+        return
+    fi
+    
+    local index=$((target - 1))
+    local app_json=$(echo "$APPS_JSON" | jq ".[$index] // empty")
+    
+    if [[ -z "$app_json" || "$app_json" == "null" ]]; then
+        echo -e "${RED}Invalid index: $target${NC}"
+        return
+    fi
+    
+    local app_name=$(echo "$app_json" | jq -r '.Name')
+    
+    echo -e "${YELLOW}About to delete app: $app_name${NC}"
+    echo "$app_json" | jq .
+    echo ""
+    
+    read -r -p "Are you sure you want to delete this app? [y/N]: " confirm
+    if [[ "${confirm,,}" =~ ^(y|yes)$ ]]; then
+        # Stop the app if running
+        if tmux_window_exists "$app_name"; then
+            tmux_stop_app "$app_name"
+        fi
+        
+        remove_app_from_json "$json_file" "$app_name"
+        echo -e "${GREEN}App '$app_name' deleted successfully!${NC}"
+    else
+        echo "Cancelled."
+    fi
+}
+
+# Display network configuration URLs
+display_network_urls() {
+    echo ""
+    echo -e "${CYAN}Detecting network configuration...${NC}"
+    echo "  Network URL:  $NETWORK_URL"
+    echo "  External URL: $EXTERNAL_URL"
+    echo "  Generic URL:  $GENERIC_URL"
+    
+    # Show dashboard status
+    if is_landing_page_running; then
+        echo -e "  ${GREEN}Dashboard:${NC}    http://localhost:$LANDING_PAGE_PORT ${GREEN}(running)${NC}"
+        echo -e "  ${GREEN}Dashboard:${NC}    $NETWORK_URL:$LANDING_PAGE_PORT ${GREEN}(running)${NC}"
+        echo -e "  ${GREEN}Dashboard:${NC}    $NETWORK_URL/app_dashboard/ ${GREEN}(running)${NC}"
+    else
+        echo -e "  ${YELLOW}Dashboard:${NC}    Not running (press D to start)"
+    fi
+}
+
+# Interactive menu
+interactive_menu() {
+    while true; do
+        load_apps_json
+        display_network_urls
+        display_apps
+        
+        echo ""
+        echo -e "${CYAN}Commands:${NC}"
+        echo "  Dashboard"
+        echo "    D         - Toggle dashboard (start/stop)"
+        echo "  Manage apps"
+        echo "    [number(s)] - Start app(s) by index (e.g., 1,2,3) (0 for all)"
+        echo "    [name]      - Start app by name"
+        echo "    s [num(s)]  - Stop app(s) by index (e.g., 1,2,3) (0 for all)"
+        echo "    r [num(s)]  - Restart app(s) by index (e.g., 1,2,3) (0 for all)"
+        echo "    u [num(s)]  - Update app(s) from repo (e.g., 1,2,3) (0 for all)"
+        echo "  Edit apps.json"
+        echo "    aa          - Add a new app (incl. Custom: any start command + port)"
+        echo "    ap          - Add a new process (custom command)"
+        echo "    e [num]     - Edit by index"
+        echo "    d [num(s)]  - Delete app(s) by index (e.g., 1,2,3)"
+        echo "  Tmux"
+        echo "    l           - List tmux windows"
+        echo "    t           - Attach to tmux session"
+        echo "    t [num]     - Attach and switch to app window"
+        echo "  Other"
+        echo "    R           - Refresh list"
+        echo "    q           - Quit"
+        echo ""
+        
+        read -r -p "Enter selection: " input
+        
+        # Handle case-sensitive commands first (before lowercasing)
+        case "$input" in
+            D)
+                # Capital D - toggle dashboard
+                if is_landing_page_running; then
+                    stop_landing_page
+                else
+                    SKIP_LANDING_PAGE=false
+                    start_landing_page
+                fi
+                echo ""
+                echo "Press Enter to continue..."
+                read -r
+                continue
+                ;;
+            R)
+                # Capital R - refresh
+                continue
+                ;;
+        esac
+        
+        case "${input,,}" in
+            q|quit|exit)
+                echo "Goodbye!"
+                exit 0
+                ;;
+            aa|add)
+                add_new_app
+                ;;
+            ap|process)
+                add_new_process
+                ;;
+            l|list)
+                tmux_list_windows || true
+                ;;
+            t\ *|t[0-9]*)
+                # Attach and switch to app window by index
+                local attach_target="${input#t }"
+                attach_target="${attach_target#t}"
+                if [[ "$attach_target" =~ ^[0-9]+$ ]]; then
+                    local idx=$((attach_target - 1))
+                    local app_json=$(echo "$APPS_JSON" | jq ".[$idx] // empty")
+                    if [[ -n "$app_json" && "$app_json" != "null" ]]; then
+                        local app_name=$(echo "$app_json" | jq -r '.Name')
+                        if tmux_window_exists "$app_name"; then
+                            tmux_select_window "$app_name" || true
+                            echo -e "${CYAN}Attaching to tmux session... (Ctrl+B, D to detach)${NC}"
+                            sleep 1
+                            tmux_attach || echo -e "${YELLOW}No tmux session to attach to${NC}"
+                        else
+                            echo -e "${YELLOW}Window for '$app_name' is not running${NC}"
+                        fi
+                    else
+                        echo -e "${RED}Invalid index: $attach_target${NC}"
+                    fi
+                else
+                    echo -e "${YELLOW}Usage: t <number>${NC}"
+                fi
+                ;;
+            t|attach)
+                echo -e "${CYAN}Attaching to tmux session... (Ctrl+B, D to detach)${NC}"
+                sleep 1
+                tmux_attach || echo -e "${YELLOW}No tmux session to attach to${NC}"
+                ;;
+            s)
+                # Just 's' alone - show usage
+                echo -e "${YELLOW}Usage: s <number> (0 for all)${NC}"
+                ;;
+            e\ *|e[0-9]*)
+                # Edit command
+                local edit_target="${input#e }"
+                edit_target="${edit_target#e}"
+                edit_app "$edit_target"
+                ;;
+            d\ *|d[0-9]*)
+                # Delete command
+                local delete_target="${input#d }"
+                delete_target="${delete_target#d}"
+                if [[ "$delete_target" =~ ^[0-9,]+$ ]]; then
+                    IFS=',' read -ra _indices <<< "$delete_target"
+                    for _idx_str in "${_indices[@]}"; do
+                        _idx_str=$(echo "$_idx_str" | xargs)
+                        [[ -z "$_idx_str" ]] && continue
+                        delete_app "$_idx_str"
+                    done
+                else
+                    delete_app "$delete_target"
+                fi
+                ;;
+            s\ *|s[0-9]*)
+                # Stop command
+                local stop_target="${input#s }"
+                stop_target="${stop_target#s}"
+                if [[ "$stop_target" == "0" ]]; then
+                    stop_all_apps || true
+                elif [[ "$stop_target" =~ ^[0-9,]+$ ]]; then
+                    IFS=',' read -ra _indices <<< "$stop_target"
+                    for _idx_str in "${_indices[@]}"; do
+                        _idx_str=$(echo "$_idx_str" | xargs)
+                        [[ -z "$_idx_str" ]] && continue
+                        if [[ "$_idx_str" == "0" ]]; then stop_all_apps || true; continue; fi
+                        local _idx=$((_idx_str - 1))
+                        local _app_json=$(echo "$APPS_JSON" | jq ".[$_idx] // empty")
+                        if [[ -n "$_app_json" && "$_app_json" != "null" ]]; then
+                            stop_app "$_app_json" || true
+                        else
+                            echo -e "${RED}Invalid index: $_idx_str${NC}"
+                        fi
+                    done
+                else
+                    echo -e "${YELLOW}Usage: s <number(s)> (e.g., 1,2,3) (0 for all)${NC}"
+                fi
+                ;;
+            r\ *|r[0-9]*)
+                # Restart command
+                local restart_target="${input#r }"
+                restart_target="${restart_target#r}"
+                if [[ "$restart_target" == "0" ]]; then
+                    echo -e "${CYAN}Restarting all apps...${NC}"
+                    echo "$APPS_JSON" | jq -c '.[]' | while IFS= read -r app; do
+                        restart_app "$app" || true
+                    done
+                elif [[ "$restart_target" =~ ^[0-9,]+$ ]]; then
+                    IFS=',' read -ra _indices <<< "$restart_target"
+                    for _idx_str in "${_indices[@]}"; do
+                        _idx_str=$(echo "$_idx_str" | xargs)
+                        [[ -z "$_idx_str" ]] && continue
+                        if [[ "$_idx_str" == "0" ]]; then
+                            echo -e "${CYAN}Restarting all apps...${NC}"
+                            echo "$APPS_JSON" | jq -c '.[]' | while IFS= read -r app; do restart_app "$app" || true; done
+                            continue
+                        fi
+                        local _idx=$((_idx_str - 1))
+                        local _app_json=$(echo "$APPS_JSON" | jq ".[$_idx] // empty")
+                        if [[ -n "$_app_json" && "$_app_json" != "null" ]]; then
+                            restart_app "$_app_json" || true
+                        else
+                            echo -e "${RED}Invalid index: $_idx_str${NC}"
+                        fi
+                    done
+                else
+                    echo -e "${YELLOW}Usage: r <number(s)> (e.g., 1,2,3) (0 for all)${NC}"
+                fi
+                ;;
+            u\ *|u[0-9]*|u0)
+                # Update command (git pull + sync venv + restart)
+                local update_target="${input#u }"
+                update_target="${update_target#u}"
+                if [[ "$update_target" == "0" ]]; then
+                    # Update all apps
+                    echo -e "${CYAN}Updating all apps...${NC}"
+                    echo "$APPS_JSON" | jq -c '.[]' | while IFS= read -r app; do
+                        update_app "$app" || true
+                    done
+                elif [[ "$update_target" =~ ^[0-9,]+$ ]]; then
+                    IFS=',' read -ra _indices <<< "$update_target"
+                    for _idx_str in "${_indices[@]}"; do
+                        _idx_str=$(echo "$_idx_str" | xargs)
+                        [[ -z "$_idx_str" ]] && continue
+                        if [[ "$_idx_str" == "0" ]]; then
+                            echo -e "${CYAN}Updating all apps...${NC}"
+                            echo "$APPS_JSON" | jq -c '.[]' | while IFS= read -r app; do update_app "$app" || true; done
+                            continue
+                        fi
+                        local _idx=$((_idx_str - 1))
+                        local _app_json=$(echo "$APPS_JSON" | jq ".[$_idx] // empty")
+                        if [[ -n "$_app_json" && "$_app_json" != "null" ]]; then
+                            update_app "$_app_json" || true
+                        else
+                            echo -e "${RED}Invalid index: $_idx_str${NC}"
+                        fi
+                    done
+                else
+                    echo -e "${YELLOW}Usage: u <number(s)> (e.g., 1,2,3) or u 0 for all${NC}"
+                fi
+                ;;
+            *)
+                if [[ -n "$input" ]]; then
+                    start_selected_apps "$input"
+                fi
+                ;;
+        esac
+        
+        echo ""
+        echo "Press Enter to continue..."
+        read -r
+    done
+}
+
+# Main execution
+main() {
+    # Handle attach mode first
+    if $ATTACH_MODE; then
+        tmux_attach
+        exit 0
+    fi
+    
+    print_header "App Manager for Linux (tmux)"
+    
+    check_dependencies
+    
+    # Detect URL prefixes
+    echo -e "${CYAN}Detecting network configuration...${NC}"
+    NETWORK_URL=$(get_network_url_prefix)
+    EXTERNAL_URL=$(get_external_url_prefix)
+    GENERIC_URL=$(get_generic_url_prefix)
+    
+    echo "  Network URL:  $NETWORK_URL"
+    echo "  External URL: $EXTERNAL_URL"
+    echo "  Generic URL:  $GENERIC_URL"
+    echo ""
+    
+    load_apps_json
+    
+    # Handle landing page dashboard
+    if $SKIP_LANDING_PAGE; then
+        # Stop any existing dashboard if --no-landing was specified
+        if is_landing_page_running; then
+            stop_landing_page
+        fi
+    elif [[ "$LANDING_PAGE_ENABLED" == "true" ]]; then
+        # Auto-start landing page dashboard if enabled
+        start_landing_page
+    fi
+    
+    if $AUTO_START; then
+        if $START_ALL; then
+            echo -e "${CYAN}Starting all apps...${NC}"
+            start_selected_apps "0"
+        elif [[ -n "$APP_NAME" ]]; then
+            echo -e "${CYAN}Starting app: $APP_NAME${NC}"
+            start_selected_apps "$APP_NAME"
+        fi
+    else
+        interactive_menu
+    fi
+}
+
+main

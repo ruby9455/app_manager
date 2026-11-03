@@ -1,0 +1,16 @@
+apps.json
+apps_test.json
+debug/
+*.html
+
+# Personal / machine-specific files (keep these in a private config repo)
+apps.json.bak*
+*.bak_*
+pat_*.txt
+scp/
+nginx/*.local.*
+.vscode/
+
+# AI model files
+.ai
+.cortex/
