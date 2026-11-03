@@ -5,11 +5,11 @@ locally-hosted Python web apps (Streamlit, Django, Dash, Flask, Custom).
 
 | Folder | Platform |
 |---|---|
-| `app_management_win` | Windows (PowerShell 7 + Windows Terminal) |
-| `app_management_psmux` | Windows (psmux) |
-| `app_management_tmux` | Linux (tmux) |
+| `app_manager_win` | Windows (PowerShell 7 + Windows Terminal) |
+| `app_manager_psmux` | Windows (psmux) |
+| `app_manager_tmux` | Linux (tmux) |
 
-The Windows scripts below live in `app_management_win`; modules are imported relative to the scripts
+The Windows scripts below live in `app_manager_win`; modules are imported relative to the scripts
 (no global module installation required).
 
 Top-level scripts
@@ -63,7 +63,7 @@ Custom apps (any start command)
 For a web app the built-in types cannot start (FastAPI/uvicorn, gunicorn, a project's own launcher), use
 `"Type": "Custom"` with a `CustomCommand` and a `Port`. It gets the same port-based stop/restart, idle-tab cleanup and
 dashboard card as the other types. Add one with option 5 (type `c`; FastAPI/uvicorn/gunicorn projects are detected as
-Custom). The same entry works in `app_management_tmux` on Linux.
+Custom). The same entry works in `app_manager_tmux` on Linux.
 
 ```json
 {
@@ -105,35 +105,35 @@ From the repo root, run the manager and landing page.
 Run manager interactively:
 
 ```powershell
-pwsh -File .\app_management_win\manager.ps1
+pwsh -File .\app_manager_win\manager.ps1
 ```
 
 Generate and host the landing page (default port 1111):
 
 ```powershell
-pwsh -File .\app_management_win\landing_page.ps1
+pwsh -File .\app_manager_win\landing_page.ps1
 ```
 
 Launch both in Windows Terminal (wrapper):
 
 ```powershell
-cd .\app_management_win
+cd .\app_manager_win
 .\start.ps1
 ```
 
 Or use wt directly (example):
 
 ```powershell
-wt -w 0 new-tab pwsh -NoExit -NoProfile -ExecutionPolicy Bypass -File .\app_management_win\manager.ps1 ; split-pane -H pwsh -NoExit -NoProfile -ExecutionPolicy Bypass -File .\app_management_win\landing_page.ps1
+wt -w 0 new-tab pwsh -NoExit -NoProfile -ExecutionPolicy Bypass -File .\app_manager_win\manager.ps1 ; split-pane -H pwsh -NoExit -NoProfile -ExecutionPolicy Bypass -File .\app_manager_win\landing_page.ps1
 ```
 
 Tests
 -----
 
-There are some lightweight PowerShell tests in `app_management_win/tests/`. From the repo root:
+There are some lightweight PowerShell tests in `app_manager_win/tests/`. From the repo root:
 
 ```powershell
-pwsh -File .\app_management_win\tests\Test-AppHelpers.ps1
-pwsh -File .\app_management_win\tests\Test-LaunchHelpers.ps1
-pwsh -File .\app_management_win\tests\Test-TerminalHelpers.ps1
+pwsh -File .\app_manager_win\tests\Test-AppHelpers.ps1
+pwsh -File .\app_manager_win\tests\Test-LaunchHelpers.ps1
+pwsh -File .\app_manager_win\tests\Test-TerminalHelpers.ps1
 ```

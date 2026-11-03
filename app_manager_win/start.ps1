@@ -3,7 +3,7 @@
   Launch Windows Terminal with two panes and run the two app-management scripts.
 
 USAGE
-  Save this file into the `app_management` folder and run from PowerShell:
+  Save this file into the `app_manager_win` folder and run from PowerShell:
     .\start_both.ps1
 
 REQUIREMENTS

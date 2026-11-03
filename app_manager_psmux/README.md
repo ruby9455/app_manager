@@ -35,7 +35,7 @@ notepad .\apps.json
 .\start.ps1 list
 ```
 
-The interactive commands mirror `app_management_tmux`: start by number/name (`0` for all), `s` stop, `r` restart, `u` update, `aa` add app, `ap` add custom process, `e` edit, `d` delete, `D` dashboard toggle, `l` list windows, and `t` attach/select.
+The interactive commands mirror `app_manager_tmux`: start by number/name (`0` for all), `s` stop, `r` restart, `u` update, `aa` add app, `ap` add custom process, `e` edit, `d` delete, `D` dashboard toggle, `l` list windows, and `t` attach/select.
 
 ## Session behaviour
 

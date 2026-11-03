@@ -3,7 +3,7 @@
 Manage Python web apps in named psmux windows on Windows.
 
 .DESCRIPTION
-The psmux equivalent of app_management_tmux.  It keeps all apps in one psmux
+The psmux equivalent of app_manager_tmux.  It keeps all apps in one psmux
 session, giving each app a named window that can be listed, selected, stopped,
 restarted, or attached to.  This script intentionally uses PowerShell-native
 commands and Windows virtual-environment paths.

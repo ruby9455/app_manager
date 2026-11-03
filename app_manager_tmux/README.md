@@ -170,7 +170,7 @@ tmux attach -t app_manager
 ## Files
 
 ```
-app_management_tmux/
+app_manager_tmux/
 ├── manager.sh          # Main manager script
 ├── start.sh            # Quick start helper
 ├── apps.json           # Your app configurations
