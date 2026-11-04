@@ -169,18 +169,21 @@ generate_dashboard_html "$apps_json" "$network_url" "$external_url" "$generic_ur
                 if not html_content:
                     html_content = f"<html><body><p>Error generating HTML</p><pre>{result.stderr}</pre></body></html>"
                 
+                # Content-Length must be the byte count, not the character count
+                # (emojis are multi-byte in UTF-8; a short count truncates the page)
+                body = html_content.encode('utf-8')
                 self.send_response(200)
                 self.send_header('Content-type', 'text/html; charset=utf-8')
-                self.send_header('Content-Length', str(len(html_content)))
+                self.send_header('Content-Length', str(len(body)))
                 self.end_headers()
-                self.wfile.write(html_content.encode())
+                self.wfile.write(body)
             except Exception as e:
-                error_msg = f'Error: {str(e)}'
+                error_body = f'Error: {str(e)}'.encode('utf-8')
                 self.send_response(500)
-                self.send_header('Content-type', 'text/plain')
-                self.send_header('Content-Length', str(len(error_msg)))
+                self.send_header('Content-type', 'text/plain; charset=utf-8')
+                self.send_header('Content-Length', str(len(error_body)))
                 self.end_headers()
-                self.wfile.write(error_msg.encode())
+                self.wfile.write(error_body)
         else:
             self.send_response(404)
             self.send_header('Content-type', 'text/plain')
