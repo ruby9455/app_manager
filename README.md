@@ -89,7 +89,7 @@ Machine-specific settings
 -------------------------
 
 - `apps.json` is gitignored; keep your real one outside this repo (for example in a private config repo) and copy
-  or symlink it into the platform folder.
+  or symlink it into the platform folder. Real nginx routes belong there too. See `AGENTS.md` for the layout.
 - URL fallbacks default to `http://127.0.0.1`. Override them per machine with environment variables:
 
 ```powershell
