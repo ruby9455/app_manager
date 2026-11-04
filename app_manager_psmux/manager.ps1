@@ -26,7 +26,7 @@ Import-Module (Join-Path $modules 'PsmuxHelpers.psm1') -Force
 
 $script:LandingPort = 1111
 $script:LandingName = '_Dashboard'
-$script:AppsPath = Join-Path $PSScriptRoot 'apps.json'
+$script:AppsPath = Get-PsmuxAppsPath -ScriptRoot $PSScriptRoot
 $script:ExampleAppsPath = Join-Path $PSScriptRoot 'apps_example.json'
 $script:Apps = @()
 
@@ -91,6 +91,7 @@ function Initialize-AppsFile {
 }
 function Load-Apps {
     Initialize-AppsFile
+    Write-Host "Loading apps from: $script:AppsPath" -ForegroundColor Cyan
     $raw = Get-Content $script:AppsPath -Raw | ConvertFrom-Json
     $seen = @{}
     $script:Apps = @($raw | Where-Object {

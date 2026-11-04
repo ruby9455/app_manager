@@ -76,8 +76,9 @@ function Get-DashboardHtml {
         }
     } catch { Write-Warning "Could not import UrlHelpers module. URL prefixes will use defaults." }
 
-    # Load apps.json
-    $jsonFilePath = "$PSScriptRoot\apps.json"
+    # Load apps.json (machine config folder first, then next to this script)
+    Import-Module -Force -ErrorAction Stop (Join-Path $modulesRoot 'ConfigHelpers.psm1')
+    $jsonFilePath = Get-AppsJsonFilePath -ScriptRoot $PSScriptRoot
     
     if (-not (Test-Path $jsonFilePath)) {
         throw "apps.json not found at $jsonFilePath"
@@ -229,9 +230,10 @@ $requestHandler = {
         $modulesRoot = Join-Path $PSScriptRoot 'Modules'
         Import-Module -Force -ErrorAction SilentlyContinue (Join-Path $modulesRoot 'Dashboard.psm1')
         Import-Module -Force -ErrorAction SilentlyContinue (Join-Path $modulesRoot 'UrlHelpers.psm1')
+        Import-Module -Force -ErrorAction SilentlyContinue (Join-Path $modulesRoot 'ConfigHelpers.psm1')
         
-        # Load apps.json
-        $jsonFilePath = "$PSScriptRoot\apps.json"
+        # Load apps.json (machine config folder first, then next to this script)
+        $jsonFilePath = if (Get-Command -Name Get-AppsJsonFilePath -ErrorAction SilentlyContinue) { Get-AppsJsonFilePath -ScriptRoot $PSScriptRoot } else { "$PSScriptRoot\apps.json" }
         if (Test-Path $jsonFilePath) {
             $apps = Get-Content $jsonFilePath | ConvertFrom-Json
             

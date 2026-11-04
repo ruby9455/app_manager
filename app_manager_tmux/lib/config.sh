@@ -21,10 +21,29 @@ LANDING_PAGE_PORT=1111             # Default port for landing page
 LANDING_PAGE_WINDOW_NAME="_Dashboard"
 
 # Get the apps.json file path
+# Lookup order:
+#   1. $APP_MANAGER_APPS_FILE (explicit path)
+#   2. ${APP_MANAGER_CONFIG_DIR:-~/code/app_manager_config}/machines/<hostname>/tmux/apps.json
+#   3. apps.json next to the scripts (or the parent folder / current folder)
 # Usage: get_apps_json_path "/path/to/script/dir"
 get_apps_json_path() {
     local script_dir="${1:-.}"
+    local config_dir="${APP_MANAGER_CONFIG_DIR:-$HOME/code/app_manager_config}"
+    local host_name
+    host_name=$(hostname -s 2>/dev/null || true)
+    host_name="${host_name:-${HOSTNAME%%.*}}"
+
+    if [[ -n "${APP_MANAGER_APPS_FILE:-}" ]]; then
+        if [[ -f "$APP_MANAGER_APPS_FILE" ]]; then
+            echo "$(realpath "$APP_MANAGER_APPS_FILE")"
+            return 0
+        fi
+        echo "Error: APP_MANAGER_APPS_FILE not found: $APP_MANAGER_APPS_FILE" >&2
+        return 1
+    fi
+
     local candidates=(
+        "$config_dir/machines/$host_name/tmux/apps.json"
         "$script_dir/apps.json"
         "$script_dir/../apps.json"
         "$(pwd)/apps.json"

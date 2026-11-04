@@ -4,11 +4,26 @@ $ErrorActionPreference = 'Stop'
 # ConfigHelpers.psm1 - centralize apps.json pathing, load/save, and in-memory state prep
 # Depends on AppHelpers for ConvertTo-NormalizedAppsList and ConvertTo-Hashtable, Select-UniqueAppsByName
 
+# Lookup order:
+#   1. $env:APP_MANAGER_APPS_FILE (explicit path)
+#   2. ($env:APP_MANAGER_CONFIG_DIR or ~/code/app_manager_config)/machines/<COMPUTERNAME>/<Platform>/apps.json, if it exists
+#   3. apps.json next to the scripts
 function Get-AppsJsonFilePath {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)][string]$ScriptRoot
+        [Parameter(Mandatory=$true)][string]$ScriptRoot,
+        [Parameter(Mandatory=$false)][string]$Platform = 'win'
     )
+    if ($env:APP_MANAGER_APPS_FILE) {
+        if (-not (Test-Path -LiteralPath $env:APP_MANAGER_APPS_FILE)) { throw "APP_MANAGER_APPS_FILE not found: $env:APP_MANAGER_APPS_FILE" }
+        return $env:APP_MANAGER_APPS_FILE
+    }
+
+    $configDir = if ($env:APP_MANAGER_CONFIG_DIR) { $env:APP_MANAGER_CONFIG_DIR } else { Join-Path $HOME 'code\app_manager_config' }
+    $hostName = if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { [System.Net.Dns]::GetHostName() }
+    $machinePath = Join-Path $configDir (Join-Path 'machines' (Join-Path $hostName (Join-Path $Platform 'apps.json')))
+    if (Test-Path -LiteralPath $machinePath) { return $machinePath }
+
     return (Join-Path $ScriptRoot 'apps.json')
 }
 

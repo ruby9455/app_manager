@@ -172,9 +172,24 @@ function Stop-AllPsmuxWindows {
     Write-Host 'Stopped all psmux windows and removed the session.' -ForegroundColor Green
 }
 
+# apps.json lookup: $env:APP_MANAGER_APPS_FILE, then
+# ($env:APP_MANAGER_CONFIG_DIR or ~/code/app_manager_config)/machines/<COMPUTERNAME>/psmux/apps.json, then next to the scripts
+function Get-PsmuxAppsPath {
+    param([Parameter(Mandatory)][string]$ScriptRoot)
+    if ($env:APP_MANAGER_APPS_FILE) {
+        if (-not (Test-Path -LiteralPath $env:APP_MANAGER_APPS_FILE)) { throw "APP_MANAGER_APPS_FILE not found: $env:APP_MANAGER_APPS_FILE" }
+        return $env:APP_MANAGER_APPS_FILE
+    }
+    $configDir = if ($env:APP_MANAGER_CONFIG_DIR) { $env:APP_MANAGER_CONFIG_DIR } else { Join-Path $HOME 'code\app_manager_config' }
+    $hostName = if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { [System.Net.Dns]::GetHostName() }
+    $machinePath = Join-Path $configDir "machines\$hostName\psmux\apps.json"
+    if (Test-Path -LiteralPath $machinePath) { return $machinePath }
+    return (Join-Path $ScriptRoot 'apps.json')
+}
+
 Export-ModuleMember -Function @(
     'Get-PsmuxCommand', 'Invoke-Psmux', 'Get-PsmuxSessionName', 'ConvertTo-PsmuxWindowName',
     'Test-PsmuxSession', 'Initialize-PsmuxSession', 'Test-PsmuxWindow', 'New-PsmuxEncodedCommand',
     'New-PsmuxWindow', 'Stop-PsmuxWindow', 'Show-PsmuxWindows', 'Connect-PsmuxSession',
-    'Select-PsmuxWindow', 'Stop-AllPsmuxWindows'
+    'Select-PsmuxWindow', 'Stop-AllPsmuxWindows', 'Get-PsmuxAppsPath'
 )

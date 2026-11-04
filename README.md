@@ -88,8 +88,14 @@ Custom). The same entry works in `app_manager_tmux` on Linux.
 Machine-specific settings
 -------------------------
 
-- `apps.json` is gitignored; keep your real one outside this repo (for example in a private config repo) and copy
-  or symlink it into the platform folder. Real nginx routes belong there too. See `AGENTS.md` for the layout.
+- `apps.json` is gitignored. Each manager and landing page uses the first of:
+  1. `APP_MANAGER_APPS_FILE` (an explicit path)
+  2. `~/code/app_manager_config/machines/<hostname>/<platform>/apps.json`, where `<platform>` is `win`, `psmux` or
+     `tmux`. Set `APP_MANAGER_CONFIG_DIR` to use another folder.
+  3. `apps.json` next to the scripts
+
+  Keeping one folder per machine in a private config repo means every machine can share it without copying files
+  around. Real nginx routes belong there too. See `AGENTS.md` for the layout.
 - URL fallbacks default to `http://127.0.0.1`. Override them per machine with environment variables:
 
 ```powershell
@@ -137,3 +143,5 @@ pwsh -File .\app_manager_win\tests\Test-AppHelpers.ps1
 pwsh -File .\app_manager_win\tests\Test-LaunchHelpers.ps1
 pwsh -File .\app_manager_win\tests\Test-TerminalHelpers.ps1
 ```
+
+On Linux, the tmux lookup test runs with `bash app_manager_tmux/tests/test_config.sh`.

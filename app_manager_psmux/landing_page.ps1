@@ -23,7 +23,8 @@ function Get-ExternalUrl { try { $ip = Invoke-RestMethod -Uri 'https://api.ipify
 function Get-GenericUrl { if ($env:COMPUTERNAME) { return "http://$env:COMPUTERNAME" }; return Get-NetworkUrl }
 
 function New-DashboardHtml {
-    $appsPath = Join-Path $PSScriptRoot 'apps.json'
+    Import-Module (Join-Path $PSScriptRoot 'Modules\PsmuxHelpers.psm1') -Force
+    $appsPath = Get-PsmuxAppsPath -ScriptRoot $PSScriptRoot
     $apps = if (Test-Path $appsPath) { @(Get-Content $appsPath -Raw | ConvertFrom-Json) } else { @() }
     $network = Get-NetworkUrl; $external = Get-ExternalUrl; $generic = Get-GenericUrl
     $cards = foreach ($app in $apps) {

@@ -156,6 +156,10 @@ check_dependencies() {
 # Load apps from JSON
 load_apps_json() {
     local json_path
+    if [[ -n "${APP_MANAGER_APPS_FILE:-}" && ! -f "$APP_MANAGER_APPS_FILE" ]]; then
+        echo -e "${RED}Error: APP_MANAGER_APPS_FILE not found: $APP_MANAGER_APPS_FILE${NC}"
+        exit 1
+    fi
     json_path=$(get_apps_json_path "$SCRIPT_DIR" 2>/dev/null) || {
         # apps.json not found - try to create from example
         local example_path="$SCRIPT_DIR/apps_example.json"
@@ -176,6 +180,8 @@ load_apps_json() {
     }
     
     echo -e "${CYAN}Loading apps from: $json_path${NC}"
+    # Add/edit/delete save back to the same file
+    APPS_JSON_PATH="$json_path"
     
     APPS_JSON=$(cat "$json_path")
     APPS_JSON=$(echo "$APPS_JSON" | filter_supported_apps | unique_apps_by_name)
@@ -641,7 +647,7 @@ stop_all_apps() {
 
 # Add a new app interactively
 add_new_app() {
-    local json_file="$SCRIPT_DIR/apps.json"
+    local json_file="${APPS_JSON_PATH:-$SCRIPT_DIR/apps.json}"
     
     print_header "Add New App"
     
@@ -742,7 +748,7 @@ add_new_app() {
 
 # Add a new process (custom command) interactively
 add_new_process() {
-    local json_file="$SCRIPT_DIR/apps.json"
+    local json_file="${APPS_JSON_PATH:-$SCRIPT_DIR/apps.json}"
     
     print_header "Add New Process (Custom Command)"
     
@@ -819,7 +825,7 @@ add_new_process() {
 # Edit an existing app or process
 edit_app() {
     local target="$1"
-    local json_file="$SCRIPT_DIR/apps.json"
+    local json_file="${APPS_JSON_PATH:-$SCRIPT_DIR/apps.json}"
     
     if [[ ! "$target" =~ ^[0-9]+$ ]]; then
         echo -e "${YELLOW}Usage: e <number>${NC}"
@@ -962,7 +968,7 @@ edit_app() {
 # Delete an app
 delete_app() {
     local target="$1"
-    local json_file="$SCRIPT_DIR/apps.json"
+    local json_file="${APPS_JSON_PATH:-$SCRIPT_DIR/apps.json}"
     
     if [[ ! "$target" =~ ^[0-9]+$ ]]; then
         echo -e "${YELLOW}Usage: d <number>${NC}"
