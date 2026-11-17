@@ -8,6 +8,7 @@ locally-hosted Python web apps (Streamlit, Django, Dash, Flask, Custom).
 | `app_manager_win` | Windows (PowerShell 7 + Windows Terminal) |
 | `app_manager_psmux` | Windows (psmux) |
 | `app_manager_tmux` | Linux (tmux) |
+| `app_manager_tuios` | Linux, macOS (Bash) and Windows, Linux, macOS (PowerShell 7), with tuios |
 
 The Windows scripts below live in `app_manager_win`; modules are imported relative to the scripts
 (no global module installation required).
@@ -90,8 +91,8 @@ Machine-specific settings
 
 - `apps.json` is gitignored. Each manager and landing page uses the first of:
   1. `APP_MANAGER_APPS_FILE` (an explicit path)
-  2. `~/code/app_manager_config/machines/<hostname>/<platform>/apps.json`, where `<platform>` is `win`, `psmux` or
-     `tmux`. Set `APP_MANAGER_CONFIG_DIR` to use another folder.
+  2. `~/code/app_manager_config/machines/<hostname>/<platform>/apps.json`, where `<platform>` is `win`, `psmux`,
+     `tmux` or `tuios`. Set `APP_MANAGER_CONFIG_DIR` to use another folder.
   3. `apps.json` next to the scripts
 
   Keeping one folder per machine in a private config repo means every machine can share it without copying files
@@ -145,3 +146,5 @@ pwsh -File .\app_manager_win\tests\Test-TerminalHelpers.ps1
 ```
 
 On Linux, the tmux lookup test runs with `bash app_manager_tmux/tests/test_config.sh`.
+
+The tuios edition's tests are listed in `app_manager_tuios/README.md`.

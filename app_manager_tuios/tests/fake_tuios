@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+#
+# tests/fake_tuios - a stand-in for the tuios CLI, enough for the tests
+# Sessions and windows are kept in the JSON file $FAKE_TUIOS_STATE; every call is appended to $FAKE_TUIOS_STATE.log.
+# FAKE_TUIOS_NO_DAEMON=1 makes `ls` behave like tuios with no daemon (saved sessions, exit 3).
+#
+
+set -u
+state="${FAKE_TUIOS_STATE:?FAKE_TUIOS_STATE is not set}"
+[[ -f "$state" ]] || echo '{"next": 1, "sessions": {}}' > "$state"
+printf '%s\n' "$*" >> "$state.log"
+
+cmd="${1:-}"
+shift || true
+session=""; window=""; name=""; cwd=""; workspace=""; ratio=""
+args=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -s|--session) session="$2"; shift 2 ;;
+        -w|--window) window="$2"; shift 2 ;;
+        --name) name="$2"; shift 2 ;;
+        --cwd) cwd="$2"; shift 2 ;;
+        --workspace) workspace="$2"; shift 2 ;;
+        --ratio) ratio="$2"; shift 2 ;;
+        --json|--detach|-d|--no-focus|--print-id) shift ;;
+        --) shift; break ;;
+        *) args+=("$1"); shift ;;
+    esac
+done
+argv=("$@")
+
+save() { local tmp; tmp=$(jq "$@" "$state") && printf '%s\n' "$tmp" > "$state"; }
+new_id() { printf '%08x-0000-4000-8000-000000000000' "$(jq '.next' "$state")"; }
+has_session() { jq -e --arg s "$1" '.sessions | has($s)' "$state" >/dev/null; }
+# The window that -w (or a positional) names: full id, unique id prefix, or exact name
+find_window() {
+    jq -r --arg s "$session" --arg w "$1" \
+        '[.sessions[$s][]? | select(.window_id == $w or .custom_name == $w or (.window_id | startswith($w)))][0].window_id // empty' "$state"
+}
+
+case "$cmd" in
+    ls)
+        if [[ "${FAKE_TUIOS_NO_DAEMON:-}" == "1" ]]; then
+            echo '[{"name": "app_manager", "saved": true}]'
+            exit 3
+        fi
+        jq '[.sessions | to_entries[] | {name: .key, window_count: (.value | length), attached: false}]' "$state"
+        ;;
+    new)
+        target="${args[0]:-session-0}"
+        has_session "$target" && { echo "Session \"$target\" already exists." >&2; exit 1; }
+        id=$(new_id)
+        save --arg s "$target" --arg id "$id" --arg cwd "${cwd:-$PWD}" \
+            '.next += 1 | .sessions[$s] = [{window_id: $id, title: "Terminal", cwd: $cwd, focused: true, workspace: 1, argv: []}]
+             | .names[$s] = {}'
+        ;;
+    set-window)
+        has_session "$session" || exit 1
+        target_id=$(find_window "${window:-}")
+        [[ -z "$window" ]] && target_id=$(jq -r --arg s "$session" '[.sessions[$s][] | select(.focused)][0].window_id // .sessions[$s][0].window_id' "$state")
+        save --arg s "$session" --arg id "$target_id" --arg n "$name" \
+            '.sessions[$s] |= map(if .window_id == $id then .custom_name = $n else . end)'
+        ;;
+    list-windows)
+        has_session "$session" || { echo "Session \"$session\" was not found." >&2; exit 1; }
+        jq --arg s "$session" '{success: true, windows: [.sessions[$s] | to_entries[] | .value + {index: .key}], total: (.sessions[$s] | length)}' "$state"
+        ;;
+    list-workspaces)
+        has_session "$session" || { echo "Session \"$session\" was not found." >&2; exit 1; }
+        jq --arg s "$session" '.sessions[$s] as $w | (.names[$s] // {}) as $n
+            | {success: true, workspaces: [range(1; 10) as $i | {workspace: $i, name: ($n[$i | tostring] // ""),
+                window_count: ([$w[] | select(.workspace == $i)] | length)}]}' "$state"
+        ;;
+    set-workspace-name)
+        has_session "$session" || exit 1
+        save --arg s "$session" --arg i "${args[0]:-}" --arg n "${args[1]:-}" \
+            'if $n == "" then del(.names[$s][$i]) else .names[$s][$i] = $n end'
+        ;;
+    new-window)
+        has_session "$session" || { echo "Session \"$session\" was not found." >&2; exit 1; }
+        id=$(new_id)
+        argv_json=$(printf '%s\n' "${argv[@]}" | jq -R . | jq -s .)
+        save --arg s "$session" --arg id "$id" --arg n "${args[0]:-}" --arg cwd "$cwd" --arg ws "${workspace:-1}" --argjson argv "$argv_json" \
+            '.next += 1 | .sessions[$s] += [{window_id: $id, custom_name: $n, cwd: $cwd, focused: false, workspace: ($ws | tonumber), argv: $argv}]'
+        printf '%s  %s\n' "${id:0:8}" "${args[0]:-}"
+        ;;
+    split-window)
+        has_session "$session" || { echo "Session \"$session\" was not found." >&2; exit 1; }
+        target_id=$(find_window "$window")
+        [[ -n "$target_id" ]] || { echo "Window \"$window\" was not found." >&2; exit 1; }
+        id=$(new_id)
+        argv_json=$(printf '%s\n' "${argv[@]}" | jq -R . | jq -s .)
+        save --arg s "$session" --arg id "$id" --arg n "$name" --arg cwd "$cwd" --arg t "$target_id" --arg side "${args[0]:-}" \
+            --arg ratio "$ratio" --argjson argv "$argv_json" \
+            '.next += 1 | ([.sessions[$s][] | select(.window_id == $t)][0].workspace) as $ws
+             | .sessions[$s] += [{window_id: $id, custom_name: $n, cwd: $cwd, focused: false, workspace: $ws, argv: $argv,
+                                  split: {side: $side, of: $t, ratio: $ratio}}]'
+        printf '%s  %s\n' "${id:0:8}" "$name"
+        ;;
+    send-keys|focus-window)
+        target="${window:-${args[0]:-}}"
+        [[ "$cmd" == "send-keys" ]] || target="${args[0]:-}"
+        [[ -n "$(find_window "$target")" ]] || { echo "Window \"$target\" was not found." >&2; exit 1; }
+        ;;
+    close-window)
+        target_id=$(find_window "${args[0]:-}")
+        [[ -n "$target_id" ]] || { echo "Window \"${args[0]:-}\" was not found." >&2; exit 1; }
+        save --arg s "$session" --arg id "$target_id" '.sessions[$s] |= map(select(.window_id != $id))'
+        ;;
+    kill-session)
+        save --arg s "${args[0]:-}" 'del(.sessions[$s]) | del(.names[$s])'
+        ;;
+    attach|switch-session)
+        ;;
+    *)
+        echo "fake_tuios: unsupported command: $cmd" >&2
+        exit 1
+        ;;
+esac
