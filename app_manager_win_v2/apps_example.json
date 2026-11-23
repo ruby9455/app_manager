@@ -1,0 +1,79 @@
+[
+    {
+        "Name": "Example Streamlit App",
+        "Type": "Streamlit",
+        "Port": 8501,
+        "AppPath": "C:\\Users\\me\\code\\streamlit_app",
+        "IndexPath": "app.py",
+        "PackageManager": "uv"
+    },
+    {
+        "Name": "Example Django App",
+        "Type": "Django",
+        "Port": 8000,
+        "AppPath": "C:\\Users\\me\\code\\django_app",
+        "PackageManager": "pip",
+        "VenvPath": "C:\\Users\\me\\code\\django_app\\.venv",
+        "Group": "Example Django App"
+    },
+    {
+        "Name": "Example Django Scheduler",
+        "AppPath": "C:\\Users\\me\\code\\django_app",
+        "PackageManager": "pip",
+        "VenvPath": "C:\\Users\\me\\code\\django_app\\.venv",
+        "CustomCommand": "cache_scheduler",
+        "Group": "Example Django App",
+        "PaneSide": "down",
+        "PaneRatio": 30
+    },
+    {
+        "Name": "Example Flask App",
+        "Type": "Flask",
+        "Port": 5000,
+        "AppPath": "C:\\Users\\me\\code\\flask_app",
+        "IndexPath": "app.py",
+        "PackageManager": "pip"
+    },
+    {
+        "Name": "Example Dash App",
+        "Type": "Dash",
+        "Port": 8050,
+        "AppPath": "C:\\Users\\me\\code\\dash_app",
+        "IndexPath": "app.py",
+        "PackageManager": "uv"
+    },
+    {
+        "Name": "Example Custom App (FastAPI)",
+        "Type": "Custom",
+        "Port": 8100,
+        "AppPath": "C:\\Users\\me\\code\\fastapi_app",
+        "PackageManager": "uv",
+        "CustomCommand": "TZ=Europe/London uvicorn app.main:app --host 0.0.0.0 --port {port}",
+        "Group": "Example FastAPI"
+    },
+    {
+        "Name": "Example Scheduler Process",
+        "AppPath": "C:\\Users\\me\\code\\fastapi_app",
+        "PackageManager": "uv",
+        "CustomCommand": "python -m app.scheduler",
+        "Group": "Example FastAPI",
+        "PaneSide": "right"
+    },
+    {
+        "Name": "Example Worker Process",
+        "AppPath": "C:\\Users\\me\\code\\fastapi_app",
+        "PackageManager": "uv",
+        "CustomCommand": "python -m app.worker",
+        "Group": "Example FastAPI",
+        "PaneSide": "down"
+    },
+    {
+        "Name": "Example Cleanup Process",
+        "AppPath": "C:\\Users\\me\\code\\fastapi_app",
+        "PackageManager": "uv",
+        "CustomCommand": "python -m app.cleanup",
+        "Group": "Example FastAPI",
+        "PaneSide": "down",
+        "PaneBeside": "Example Scheduler Process"
+    }
+]

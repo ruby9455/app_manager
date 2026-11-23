@@ -10,12 +10,13 @@ machine-specific and live in the owner's private config repo, cloned next to thi
 
 ## Which apps.json the manager uses
 
-Every manager (`app_manager_tmux`, `app_manager_tuios`, `app_manager_win`, `app_manager_psmux`) and its landing page
+Every manager (`app_manager_tmux`, `app_manager_tuios`, `app_manager_win`, `app_manager_win_v2`, `app_manager_psmux`)
+and its landing page
 loads, and saves back to, the first of:
 
 1. `$APP_MANAGER_APPS_FILE`, if set
 2. `~/code/app_manager_config/machines/<hostname>/<platform>/apps.json` (`$APP_MANAGER_CONFIG_DIR` overrides the
-   folder; `<platform>` is `tmux`, `tuios`, `win` or `psmux`)
+   folder; `<platform>` is `tmux`, `tuios`, `win`, `win_v2` or `psmux`)
 3. `apps.json` next to the scripts
 
 `<hostname>` is `hostname -s` on Linux/macOS and `$env:COMPUTERNAME` on Windows. Check it on the machine rather than
