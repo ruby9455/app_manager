@@ -284,6 +284,40 @@ tuios_launch_app_window() {
     esac
 }
 
+# The dashboard never shares a workspace with the apps:
+#   - the manager runs in a tuios pane: the dashboard opens beside it (right, 40%), in the manager's session
+#   - else: a workspace of its own in the apps' session, the lowest empty one from 2 to 9, labelled "Dashboard"
+# Usage: tuios_start_dashboard_window "_Dashboard" "/path/to/working/dir" "command to run"
+tuios_start_dashboard_window() {
+    local name="$1" working_dir="$2" command="$3"
+    if is_in_tuios && [[ -n "${TUIOS_WINDOW_ID:-}" ]]; then
+        TUIOS_SESSION_NAME="$TUIOS_SESSION" tuios_new_window "$name" "$working_dir" "$command" split right "$TUIOS_WINDOW_ID" 40
+        return
+    fi
+    ensure_tuios_session || return 1
+    tuios_clear_empty_workspace_names
+    local workspace
+    if workspace=$(tuios_free_workspace); then
+        tuios_new_window "$name" "$working_dir" "$command" workspace "$workspace" || return 1
+        tuios_set_workspace_name "$workspace" "Dashboard"
+    else
+        echo -e "${YELLOW}Workspaces 2-9 are all in use; opening the dashboard on workspace 1${NC}"
+        tuios_new_window "$name" "$working_dir" "$command" workspace 1
+    fi
+}
+
+# Session that holds the dashboard window: the manager's own session (when it runs in a tuios pane), else the apps'
+# session; empty when neither has it
+# Usage: tuios_dashboard_session "_Dashboard"
+tuios_dashboard_session() {
+    local name="$1"
+    if is_in_tuios && TUIOS_SESSION_NAME="$TUIOS_SESSION" tuios_window_exists "$name"; then
+        echo "$TUIOS_SESSION"
+    elif tuios_window_exists "$name"; then
+        echo "$TUIOS_SESSION_NAME"
+    fi
+}
+
 # Send Ctrl+C to a tuios window to gracefully stop the app
 # Usage: tuios_send_ctrl_c "App Name"
 tuios_send_ctrl_c() {

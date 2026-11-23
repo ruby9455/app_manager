@@ -87,7 +87,8 @@ switch -CaseSensitive ($Command) {
 
         # Create a new tuios session with two panes
         $sessionName = "app-manager-$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"
-        $pwsh = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
+        # The bare name: a Store install's full pwsh path fails when tuios starts it (see Get-PwshPath)
+        $pwsh = 'pwsh'
 
         # Create the session headless; it opens with one shell window, closed below
         $null = & $tuios new $sessionName --detach --cwd $PSScriptRoot

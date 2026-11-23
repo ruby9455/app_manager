@@ -125,6 +125,26 @@ assert_eq "down $(id_of 'Grid App')" "$(win 'Grid B' | jq -r '"\(.split.side) \(
 assert_eq "down $(id_of 'Grid A')" "$(win 'Grid C' | jq -r '"\(.split.side) \(.split.of)"')" "2x2: C splits the pane PaneBeside names (A) down"
 tuios_kill_all_windows >/dev/null
 
+# The dashboard never shares a workspace with the apps
+tuios_launch_app_window "$apps" '{"Name": "Solo2", "Type": "Streamlit", "Port": 8504}' "Solo2" "$tmp" "echo solo" >/dev/null
+tuios_start_dashboard_window "_Dashboard" "$tmp" "echo dashboard" >/dev/null
+assert_eq "2 Dashboard" "$(win _Dashboard | jq -r .workspace) $(ws_name 2)" "outside tuios, the dashboard gets a workspace of its own, labelled Dashboard"
+assert_eq "$TUIOS_SESSION_NAME" "$(tuios_dashboard_session _Dashboard)" "the dashboard is found in the apps session"
+tuios_kill_all_windows >/dev/null
+
+"$APP_MANAGER_TUIOS_BIN" new manager_session --detach >/dev/null
+TUIOS_SESSION_NAME=manager_session tuios_new_window "manager" "$tmp" "echo manager" >/dev/null
+manager_pane=$(TUIOS_SESSION_NAME=manager_session tuios_window_id "manager")
+(
+    export TUIOS_SESSION=manager_session TUIOS_WINDOW_ID="$manager_pane"
+    tuios_start_dashboard_window "_Dashboard" "$tmp" "echo dashboard" >/dev/null
+    assert_eq "manager_session" "$(tuios_dashboard_session _Dashboard)" "in a tuios pane, the dashboard opens in the manager's session"
+    assert_eq "right $manager_pane 40" "$(jq -r '.sessions.manager_session[] | select(.custom_name == "_Dashboard") | "\(.split.side) \(.split.of) \(.split.ratio)"' "$FAKE_TUIOS_STATE")" \
+        "beside the manager's pane (right, 40%)"
+    assert_false "tuios_session_exists" "and the apps session is not created for it"
+    exit $fail
+) || fail=1
+
 # Run commands (same rules as the tmux edition)
 mkdir -p "$tmp/proj"
 custom='{"Name":"api","Type":"Custom","Port":8100,"PackageManager":"uv","CustomCommand":"TZ=Europe/London uvicorn app:app --port {port}"}'

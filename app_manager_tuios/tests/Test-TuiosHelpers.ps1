@@ -59,6 +59,21 @@ try {
     Assert-True (Test-TuiosSession) 'Initialize-TuiosSession creates the session'
     Assert-True (Test-TuiosWindow '_placeholder') 'the first window is named _placeholder'
 
+    # The command in a pane really runs (a Store pwsh's full path once made every pane fail at start)
+    $marker = Join-Path $tmp 'ran.txt'
+    $writer = New-TuiosEncodedCommand $tmp 'marker' "Set-Content -LiteralPath '$marker' -Value ok; Start-Sleep -Seconds 600"
+    New-TuiosWindow -Name 'marker' -WorkingDirectory $tmp -EncodedCommand $writer -Workspace 9
+    for ($i = 0; $i -lt 40 -and -not (Test-Path $marker); $i++) { Start-Sleep -Milliseconds 250 }
+    Assert-True (Test-Path $marker) 'the command in a pane runs'
+    Remove-TuiosWindow 'marker' | Out-Null
+
+    # The dashboard has a workspace of its own, not workspace 1 with the apps
+    Start-TuiosDashboardWindow -Name '_Dashboard' -WorkingDirectory $tmp -EncodedCommand $sleep | Out-Null
+    Assert-Equal '2 Dashboard' "$((Get-Window '_Dashboard').workspace) $(Get-WorkspaceName 2)" 'outside tuios, the dashboard gets a workspace of its own, labelled Dashboard'
+    Assert-Equal $session (Get-TuiosDashboardSession '_Dashboard') 'the dashboard is found in the apps session'
+    Stop-TuiosApp '_Dashboard'
+    Assert-Equal '' (Get-WorkspaceName 2) 'stopping the dashboard frees its workspace'
+
     $apps = @(
         [pscustomobject]@{ Name = 'Shop'; Type = 'Django'; Port = 8000; Group = 'Shop' },
         [pscustomobject]@{ Name = 'Shop Scheduler'; CustomCommand = 'sched'; Group = 'Shop'; PaneSide = 'down'; PaneRatio = 30 },
@@ -119,6 +134,25 @@ try {
 
     Stop-AllTuiosWindows | Out-Null
     Assert-True (-not (Test-TuiosSession)) 'stop all removes the session'
+
+    # A manager running in a tuios pane: the dashboard opens beside it, in the manager's session
+    $managerSession = "${session}_mgr"
+    & $tuios new $managerSession --detach 2>$null | Out-Null
+    $managerPane = Invoke-InTuiosSession $managerSession {
+        New-TuiosWindow -Name 'manager' -WorkingDirectory $tmp -EncodedCommand $sleep
+        Get-TuiosWindowId 'manager'
+    }
+    $env:TUIOS_SESSION = $managerSession; $env:TUIOS_WINDOW_ID = $managerPane
+    try {
+        Start-TuiosDashboardWindow -Name '_Dashboard' -WorkingDirectory $tmp -EncodedCommand $sleep | Out-Null
+        Assert-Equal $managerSession (Get-TuiosDashboardSession '_Dashboard') 'in a tuios pane, the dashboard opens in the manager''s session'
+        $panes = Invoke-InTuiosSession $managerSession { @((Get-Window 'manager'), (Get-Window '_Dashboard')) }
+        Assert-True ($panes[0].workspace -eq $panes[1].workspace -and $panes[1].x -gt $panes[0].x) 'beside the manager''s pane, on its workspace'
+        Assert-True (-not (Test-TuiosSession)) 'and the apps session is not created for it'
+    } finally {
+        Remove-Item env:TUIOS_SESSION, env:TUIOS_WINDOW_ID -ErrorAction SilentlyContinue
+        & $tuios kill-session $managerSession 2>$null | Out-Null
+    }
 }
 finally {
     & $tuios kill-session $session 2>$null | Out-Null

@@ -183,11 +183,12 @@ function Start-LandingPage {
     if ($script:SkipLandingPage -or -not $script:LandingPageEnabled) { return }
     $windowName = $script:LandingPageWindowName
 
-    # Check if already running
-    if (Test-TuiosWindow $windowName) {
+    # Check if already running (in the manager's tuios session, or the apps' session)
+    $dashboardSession = Get-TuiosDashboardSession $windowName
+    if ($dashboardSession) {
         if (-not (Test-PortInUse $script:LandingPagePort)) {
             Write-Host 'Removing stale dashboard window...' -ForegroundColor Yellow
-            Remove-TuiosWindow $windowName
+            Invoke-InTuiosSession $dashboardSession { Remove-TuiosWindow $windowName }
         } else {
             Write-Host 'Dashboard already running' -ForegroundColor Cyan
             return
@@ -213,9 +214,10 @@ function Start-LandingPage {
         return
     }
 
+    # Beside the manager's pane when it runs in tuios, else on a workspace of its own (never with the apps)
     try {
         $run = "& $(ConvertTo-PsLiteral $landingScript) -Port $script:LandingPagePort"
-        New-TuiosWindow -Name $windowName -WorkingDirectory $PSScriptRoot -EncodedCommand (New-TuiosEncodedCommand $PSScriptRoot 'Dashboard' $run) -Workspace 1
+        Start-TuiosDashboardWindow -Name $windowName -WorkingDirectory $PSScriptRoot -EncodedCommand (New-TuiosEncodedCommand $PSScriptRoot 'Dashboard' $run)
     } catch {
         Write-Host "Warning: could not create the dashboard tuios window: $($_.Exception.Message)" -ForegroundColor Yellow
         return
@@ -237,9 +239,10 @@ function Stop-LandingPage {
     $stopped = $false
 
     # Stop tuios window if it exists (this gracefully stops the process)
-    if (Test-TuiosWindow $script:LandingPageWindowName) {
+    $dashboardSession = Get-TuiosDashboardSession $script:LandingPageWindowName
+    if ($dashboardSession) {
         Write-Host 'Stopping landing page dashboard...' -ForegroundColor Cyan
-        Stop-TuiosApp $script:LandingPageWindowName
+        Invoke-InTuiosSession $dashboardSession { Stop-TuiosApp $script:LandingPageWindowName }
         $stopped = $true
         # Give it a moment to release the port
         Start-Sleep -Seconds 2
@@ -256,7 +259,7 @@ function Stop-LandingPage {
 }
 
 function Test-LandingPageRunning {
-    return (Test-TuiosWindow $script:LandingPageWindowName) -or (Test-PortInUse $script:LandingPagePort)
+    return [bool](Get-TuiosDashboardSession $script:LandingPageWindowName) -or (Test-PortInUse $script:LandingPagePort)
 }
 
 # Check if an app is running (by tuios window or port)

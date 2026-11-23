@@ -135,11 +135,10 @@ Read-Host 'Press Enter to close this window...' | Out-Null
     return [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($commandText))
 }
 
-# The pwsh executable to run in a window: pwsh on PATH (a Store install's own path cannot be launched directly),
-# else the one running this script
+# The pwsh to run in a window. The bare name when pwsh is on PATH: on Windows a Store install's full path (an app
+# execution alias under WindowsApps) fails when tuios starts it, as pwsh then reads its own path as a script to run.
 function Get-PwshPath {
-    $onPath = Get-Command pwsh -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($onPath) { return $onPath.Source }
+    if (Get-Command pwsh -CommandType Application -ErrorAction SilentlyContinue) { return 'pwsh' }
     $current = [Environment]::ProcessPath
     if ($current -and [IO.Path]::GetFileNameWithoutExtension($current) -ieq 'pwsh') { return $current }
     throw 'pwsh was not found on PATH.'
@@ -337,6 +336,50 @@ function Start-TuiosAppWindow {
     }
 }
 
+# Run a script block with the helpers pointed at another session
+function Invoke-InTuiosSession {
+    param([Parameter(Mandatory)][string]$Session, [Parameter(Mandatory)][scriptblock]$ScriptBlock)
+    $saved = $script:SessionName
+    $script:SessionName = $Session
+    try { & $ScriptBlock } finally { $script:SessionName = $saved }
+}
+
+# The dashboard never shares a workspace with the apps:
+#   - the manager runs in a tuios pane: the dashboard opens beside it (right, 40%), in the manager's session
+#   - else: a workspace of its own in the apps' session, the lowest empty one from 2 to 9, labelled "Dashboard"
+function Start-TuiosDashboardWindow {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$WorkingDirectory,
+        [Parameter(Mandatory)][string]$EncodedCommand
+    )
+    if ($env:TUIOS_SESSION -and $env:TUIOS_WINDOW_ID) {
+        Invoke-InTuiosSession $env:TUIOS_SESSION {
+            New-TuiosWindow -Name $Name -WorkingDirectory $WorkingDirectory -EncodedCommand $EncodedCommand -SplitSide 'right' -SplitTarget $env:TUIOS_WINDOW_ID -SplitRatio 40
+        }
+        return
+    }
+    Initialize-TuiosSession
+    Clear-TuiosEmptyWorkspaceNames
+    $workspace = Get-TuiosFreeWorkspace
+    if ($workspace) {
+        New-TuiosWindow -Name $Name -WorkingDirectory $WorkingDirectory -EncodedCommand $EncodedCommand -Workspace $workspace
+        Set-TuiosWorkspaceName -Workspace $workspace -Name 'Dashboard'
+    } else {
+        Write-Host 'Workspaces 2-9 are all in use; opening the dashboard on workspace 1' -ForegroundColor Yellow
+        New-TuiosWindow -Name $Name -WorkingDirectory $WorkingDirectory -EncodedCommand $EncodedCommand -Workspace 1
+    }
+}
+
+# Session that holds the dashboard window: the manager's own session (when it runs in a tuios pane), else the apps'
+# session; $null when neither has it
+function Get-TuiosDashboardSession {
+    param([Parameter(Mandatory)][string]$Name)
+    if ($env:TUIOS_SESSION -and (Invoke-InTuiosSession $env:TUIOS_SESSION { Test-TuiosWindow $Name })) { return $env:TUIOS_SESSION }
+    if (Test-TuiosWindow $Name) { return $script:SessionName }
+    return $null
+}
+
 # Send Ctrl+C to a window to gracefully stop the app
 function Send-TuiosCtrlC {
     param([Parameter(Mandatory)][string]$Name)
@@ -448,6 +491,7 @@ Export-ModuleMember -Function @(
     'Test-TuiosSession', 'Initialize-TuiosSession', 'Get-TuiosWindows', 'Get-TuiosWindowId', 'Test-TuiosWindow',
     'New-TuiosEncodedCommand', 'New-TuiosWindow', 'Get-TuiosWorkspaces', 'Get-TuiosFreeWorkspace', 'Set-TuiosWorkspaceName',
     'Clear-TuiosEmptyWorkspaceNames', 'Get-TuiosGroupPlacement', 'Format-TuiosPlacement', 'Start-TuiosAppWindow',
+    'Invoke-InTuiosSession', 'Start-TuiosDashboardWindow', 'Get-TuiosDashboardSession',
     'Send-TuiosCtrlC', 'Remove-TuiosWindow', 'Stop-TuiosApp',
     'Show-TuiosWindows', 'Get-TuiosRunningWindowNames', 'Stop-AllTuiosWindows', 'Connect-TuiosSession',
     'Select-TuiosWindow', 'Get-MachineName', 'Get-TuiosAppsPath'

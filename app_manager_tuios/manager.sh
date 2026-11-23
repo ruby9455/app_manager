@@ -210,13 +210,13 @@ start_landing_page() {
     fi
     
     local window_name="$LANDING_PAGE_WINDOW_NAME"
-    local sanitized_name=$(sanitize_window_name "$window_name")
     
-    # Check if already running
-    if tuios_window_exists "$window_name"; then
+    # Check if already running (in the manager's tuios session, or the apps' session)
+    local dashboard_session=$(tuios_dashboard_session "$window_name")
+    if [[ -n "$dashboard_session" ]]; then
         if ! is_port_in_use "$LANDING_PAGE_PORT"; then
             echo -e "${YELLOW}Removing stale dashboard window...${NC}"
-            tuios_kill_window "$window_name" 2>/dev/null || true
+            TUIOS_SESSION_NAME="$dashboard_session" tuios_kill_window "$window_name" 2>/dev/null || true
         else
             echo -e "${CYAN}Dashboard already running${NC}"
             return 0
@@ -236,9 +236,8 @@ start_landing_page() {
 
     echo -e "${GREEN}Starting landing page dashboard on port $LANDING_PAGE_PORT...${NC}"
 
-    ensure_tuios_session
-
-    # Start landing_page.sh in its own tuios window
+    # Start landing_page.sh in its own tuios window: beside the manager's pane when it runs in tuios, else on a
+    # workspace of its own (never with the apps)
     local landing_script="$SCRIPT_DIR/landing_page.sh"
 
     if [[ ! -x "$landing_script" ]]; then
@@ -246,16 +245,9 @@ start_landing_page() {
         return 1
     fi
 
-    if ! tuios_cmd new-window -s "$TUIOS_SESSION_NAME" "$sanitized_name" --workspace 1 --cwd "$SCRIPT_DIR" -- \
-        bash -c "echo '=== Starting: Dashboard ==='; '$landing_script' '$LANDING_PAGE_PORT'; ret=\$?; echo ''; echo '=== Dashboard exited with code '\$ret' ==='; echo 'Press Enter to close this window...'; read" >/dev/null; then
+    if ! tuios_start_dashboard_window "$window_name" "$SCRIPT_DIR" "'$landing_script' '$LANDING_PAGE_PORT'"; then
         echo -e "${YELLOW}Warning: could not create the dashboard tuios window${NC}"
         return 1
-    fi
-
-    # Remove placeholder window if it exists
-    local placeholder_id=$(tuios_window_id "_placeholder")
-    if [[ -n "$placeholder_id" ]]; then
-        tuios_cmd close-window -s "$TUIOS_SESSION_NAME" "$placeholder_id" >/dev/null 2>&1 || true
     fi
 
     local attempts=20
@@ -284,9 +276,10 @@ stop_landing_page() {
     fi
     
     # Stop tuios window if it exists (this gracefully stops the process)
-    if tuios_window_exists "$window_name"; then
+    local dashboard_session=$(tuios_dashboard_session "$window_name")
+    if [[ -n "$dashboard_session" ]]; then
         echo -e "${CYAN}Stopping landing page dashboard...${NC}"
-        tuios_stop_app "$window_name"
+        TUIOS_SESSION_NAME="$dashboard_session" tuios_stop_app "$window_name"
         stopped=true
         # Give it a moment to release the port
         sleep 2
@@ -299,7 +292,7 @@ stop_landing_page() {
         # Use a gentler approach - only SIGTERM, no SIGKILL
         local pids=$(get_pids_on_port "$LANDING_PAGE_PORT")
         if [[ -n "$pids" ]]; then
-            echo "$pids" | xargs -r kill 2>/dev/null || true
+            echo "$pids" | xargs kill 2>/dev/null || true
         fi
         stopped=true
     fi
@@ -311,7 +304,7 @@ stop_landing_page() {
 
 # Check if landing page is running
 is_landing_page_running() {
-    tuios_window_exists "$LANDING_PAGE_WINDOW_NAME" || is_port_in_use "$LANDING_PAGE_PORT"
+    [[ -n "$(tuios_dashboard_session "$LANDING_PAGE_WINDOW_NAME")" ]] || is_port_in_use "$LANDING_PAGE_PORT"
 }
 
 # Check if an app is running (by port or tuios window)
